@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include "crc16.h"
 
 #define PORT 8080   // порт сервера
 #define PACKET_SIZE 12
@@ -56,6 +57,16 @@ int main() {
             printf("%02X ", buffer[i]);
         }
         printf("\n");
+
+        // Проверка CRC
+        uint16_t recv_crc = (buffer[10] << 8) | buffer[11];
+        uint16_t calc_crc = crc16(buffer, 10);
+
+        if (recv_crc == calc_crc) {
+            printf("CRC OK! (0x%04X)\n", recv_crc);
+        } else {
+            printf("CRC ERROR! Received=0x%04X, Calculated=0x%04X\n", recv_crc, calc_crc);
+        }
     } else {
         printf("Error: expected %d bytes, got %d\n", PACKET_SIZE, bytes_read);
     }
