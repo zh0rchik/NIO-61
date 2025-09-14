@@ -1,7 +1,16 @@
-Команды для компиляции (без makefile)
+Команды для компиляции 
 ```
-gcc server.c crc16.c -o server
-gcc client.c crc16.c -o client
+make
+```
+
+Чтобы удалить скомпилированные файлы:
+```
+make clean
+```
+
+Пересобрать проект
+```
+make clean && make
 ```
 
 Запусить сервер
