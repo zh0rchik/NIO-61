@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 
-#define PORT 12345   // порт сервера
+#define PORT 8080   // порт сервера
 #define PACKET_SIZE 12
 
 int main() {

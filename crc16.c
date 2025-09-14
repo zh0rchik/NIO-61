@@ -2,7 +2,7 @@
 
 
 // алгоритм определения контрольной суммы
-uint16_t crc16(const uint8_t *data, uint_t length) {
+uint16_t crc16(const uint8_t *data, uint16_t length) {
     uint16_t crc = 0xFFFF; // начальное значение все биты будут со значение 1
     // одна итерация цикла - кодирование одного байта
     for (uint16_t i = 0; i < length; i++){
