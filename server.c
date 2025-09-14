@@ -51,24 +51,21 @@ int main() {
 
     // 5. Считываение 12 байтов
     int bytes_read = read(client_fd, buffer, PACKET_SIZE);
-    if (bytes_read == PACKET_SIZE) {
-        printf("Received packet:\n");
-        for (int i = 0; i < PACKET_SIZE; i++) {
-            printf("%02X ", buffer[i]);
-        }
-        printf("\n");
+    
+    printf("Отправленный пакет:\n");
+    for (int i = 0; i < PACKET_SIZE; i++) {
+        printf("%02X ", buffer[i]);
+    }
+    printf("\n");
 
-        // Проверка CRC
-        uint16_t recv_crc = (buffer[10] << 8) | buffer[11];
-        uint16_t calc_crc = crc16(buffer, 10);
+    // Проверка CRC
+    uint16_t recv_crc = (buffer[10] << 8) | buffer[11];
+    uint16_t calc_crc = crc16(buffer, 10);
 
-        if (recv_crc == calc_crc) {
-            printf("CRC OK! (0x%04X)\n", recv_crc);
-        } else {
-            printf("invalid request\nReceived=0x%04X, Calculated=0x%04X\n", recv_crc, calc_crc);
-        }
+    if (recv_crc == calc_crc) {
+        printf("CRC OK! valid request\n(0x%04X)\n", recv_crc);
     } else {
-        printf("Error: expected %d bytes, got %d\n", PACKET_SIZE, bytes_read);
+        printf("invalid request\nReceived=0x%04X, Calculated=0x%04X\n", recv_crc, calc_crc);
     }
 
     // 6. Закрываем соединение
