@@ -65,7 +65,7 @@ int main() {
         if (recv_crc == calc_crc) {
             printf("CRC OK! (0x%04X)\n", recv_crc);
         } else {
-            printf("CRC ERROR! Received=0x%04X, Calculated=0x%04X\n", recv_crc, calc_crc);
+            printf("invalid request\nReceived=0x%04X, Calculated=0x%04X\n", recv_crc, calc_crc);
         }
     } else {
         printf("Error: expected %d bytes, got %d\n", PACKET_SIZE, bytes_read);
