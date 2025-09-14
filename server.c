@@ -40,7 +40,7 @@ int main() {
 
     printf("Server is listening on port %d...\n", PORT);
 
-    // 4. Принимаем одно соединение
+    // 4. Принятие одного соединение
     if ((client_fd = accept(server_fd, (struct sockaddr *)&address, &addrlen)) < 0) {
         perror("accept failed");
         close(server_fd);
@@ -49,7 +49,7 @@ int main() {
 
     printf("Client connected!\n");
 
-    // 5. Читаем ровно 12 байтов
+    // 5. Считываение 12 байтов
     int bytes_read = read(client_fd, buffer, PACKET_SIZE);
     if (bytes_read == PACKET_SIZE) {
         printf("Received packet:\n");
