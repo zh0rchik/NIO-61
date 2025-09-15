@@ -9,45 +9,43 @@
 #define SERVER_IP "127.0.0.1"
 #define PACKET_SIZE 12
 
-// // Структура запроса
-// typedef struct {
-//     uint16_t client_id;      // байты 0–1
-//     uint8_t  addr[3];        // байты 2–4 (адрес в 8-ричной форме)
-//     int16_t  value;          // байты 5–6 (число со знаком)
-//     uint16_t vmax;           // байты 7–8 (цена старшего разряда)
-//     uint8_t  digits;         // байт 9 (количество разрядов)
-//     uint16_t crc;            // байты 10–11 (контрольная сумма CRC16)
-// } Request;
+void decode_response(uint32_t resp, uint16_t vmax, uint8_t digits) {
+    printf("\n--- Расшифровка ответа ---\n");
+    int C = (resp >> 31) & 1;
+    int S = (resp >> 28) & 1;
+    uint16_t addr = resp & 0x1FFF;  // младшие 13 бит
+    printf("C = %d (валидность)\n", C);
+    printf("S = %d (знак)\n", S);
+    printf("Адрес = %u\n", addr);
+
+    printf("Разряды: ");
+    double step = (double)vmax;
+    int sum = 0;
+    for (int i = 0; i < digits; i++) {
+        int bit = (resp >> (27 - i)) & 1;
+        printf("%d", bit);
+        if (bit) sum += (int)step;
+        step /= 2.0;
+    }
+    printf("\nЗначение по битам = %s%d\n", S ? "-" : "", sum);
+    printf("--------------------------\n\n");
+}
 
 int main() {
     int sock = 0;
     struct sockaddr_in serv_addr;
     uint8_t packet[PACKET_SIZE];
 
-    // 1. ID клиента (123 = 0x007B)
-    packet[0] = 0x00;
-    packet[1] = 0x7B;
+    // --- Формируем запрос ---
+    packet[0] = 0x00; packet[1] = 0x7B;  // ID=123
+    packet[2] = 0; packet[3] = 7; packet[4] = 5;  // addr=075 (octal)
+    packet[5] = 0xFF; packet[6] = 0xE7;  // value=-25
+    packet[7] = 0x03; packet[8] = 0xE8;  // vmax=1000
+    packet[9] = 5;                       // digits=5
 
-    // 2. Адрес (075 в восьмеричном виде: "0", "7", "5")
-    packet[2] = 0;
-    packet[3] = 7;
-    packet[4] = 5;
-
-    // 3. Число (-25 в big endian: 0xFFE7)
-    packet[5] = 0xFF;
-    packet[6] = 0xE7;
-
-    // 4. Цена старшего разряда (1000 = 0x03E8 → big endian)
-    packet[7] = 0x03;
-    packet[8] = 0xE8;
-
-    // 5. Количество разрядов
-    packet[9] = 5;
-
-    // 6. Считаем CRC16 по первым 10 байтам
     uint16_t crc = crc16(packet, 10);
-    packet[10] = (crc >> 8) & 0xFF; // старший байт
-    packet[11] = crc & 0xFF;        // младший байт
+    packet[10] = (crc >> 8) & 0xFF;
+    packet[11] = crc & 0xFF;
 
     // --- СЕТЬ ---
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -69,7 +67,21 @@ int main() {
     }
 
     send(sock, packet, PACKET_SIZE, 0);
-    printf("Отправлен пакет с контрольной суммой (CRC16) = %X\n", crc);
+    printf("Packet sent with CRC16 = %04X\n", crc);
+
+    // Читаем ответ (4 байта)
+    uint8_t resp_buf[4];
+    int n = read(sock, resp_buf, 4);
+    if (n == 4) {
+        uint32_t resp = (resp_buf[0] << 24) | (resp_buf[1] << 16) |
+                        (resp_buf[2] << 8) | resp_buf[3];
+        printf("Received response: 0x%08X\n", resp);
+
+        // Расшифровка
+        decode_response(resp, 1000, 5);
+    } else {
+        printf("No valid 4-byte response, got %d bytes\n", n);
+    }
 
     close(sock);
     return 0;
