@@ -25,7 +25,7 @@ static void print_binary32(uint32_t v) {
     printf("\n");
 }
 
-// Расчёт весов для разрядов
+// Расчёт весов разрядов (каждый следующий — в 2 раза меньше)
 static void calculate_weights(uint16_t vmax, uint8_t digits, uint32_t weights[]) {
     uint32_t w = vmax;
     for (uint8_t i = 0; i < digits; i++) {
@@ -34,32 +34,33 @@ static void calculate_weights(uint16_t vmax, uint8_t digits, uint32_t weights[])
     }
 }
 
-// Декодирование ответа и вывод в формате:
-// HEX, BIN, ADDR, SIGN, VALUE, V_MAX, DIGIT
+// Разбор ответа сервера и вывод в удобном виде
 void decode_response(uint32_t resp, uint16_t vmax, uint8_t digits) {
-    int C = (resp >> 31) & 1;
-    int S = (resp >> 28) & 1;
-    uint16_t addr = resp & 0x1FFFu;
+    int C = (resp >> 31) & 1;       // бит подтверждения (валидность ответа)
+    int S = (resp >> 28) & 1;       // бит знака
+    uint16_t addr = resp & 0x1FFFu; // 13 младших бит → адрес
 
     if (!C) {
         printf("Ошибка сервера: invalid request\n");
         return;
     }
 
+    // Выборка «маски» включённых разрядов (digits бит подряд начиная с 27-го)
     uint32_t pattern = 0;
     for (uint8_t i = 0; i < digits; i++)
         if ((resp >> (27 - i)) & 1u)
             pattern |= (1u << (digits - 1 - i));
 
+    // вычисляем веса разрядов
     uint32_t weights[16];
     calculate_weights(vmax, digits, weights);
 
     int32_t value = 0;
-    if (!S) {
+    if (!S) { // положительное число
         for (uint8_t i = 0; i < digits; i++)
             if ((pattern >> (digits - 1 - i)) & 1u)
                 value += weights[i];
-    } else {
+    } else { // отрицательное: сумма минус 2^digits
         int32_t sum = 0;
         for (uint8_t i = 0; i < digits; i++)
             if ((pattern >> (digits - 1 - i)) & 1u)
@@ -67,18 +68,19 @@ void decode_response(uint32_t resp, uint16_t vmax, uint8_t digits) {
         value = sum - (1 << digits);
     }
 
+    // Красивый вывод результата
     printf("\nОтвет от сервера:\n");
     printf("\tBIN: "); print_binary32(resp);
     printf("\t--------------------------------------------\n");
     printf("\tHEX: 0x%08X\n", resp);
-    printf("\tADDR: %03o\n", addr);
+    printf("\tADDR: %03o\n", addr); // восьмеричный формат
     printf("\tSIGN: %c\n", S ? '-' : '+');
     printf("\tVALUE: %d\n", value);
     printf("\tV_MAX: %u\n", vmax);
     printf("\tDIGIT: %u\n", digits);
 }
 
-// Расчёт параметров: vmax и digits
+// Вычисление параметров vmax и digits по введённому числу
 void calculate_parameters(int value, uint16_t *vmax, uint8_t *digits) {
     int abs_val = abs(value);
     if (abs_val == 0) {
@@ -89,13 +91,13 @@ void calculate_parameters(int value, uint16_t *vmax, uint8_t *digits) {
 
     int power = 0, tmp = abs_val;
     while (tmp > 0) { tmp >>= 1; power++; }
-    if (value < 0) power++;
+    if (value < 0) power++; // для отрицательных — добавляем 1 бит на знак
 
     *digits = (uint8_t)power;
-    *vmax = 1u << (power - 1);
+    *vmax = 1u << (power - 1); // максимальное значение старшего разряда
 }
 
-// Ввод восьмеричного адреса
+// Ввод восьмеричного адреса с выравниванием до 3 цифр
 int read_octal_address_and_fill(uint8_t packet[]) {
     char buf[16];
     printf("Адрес (восьмеричный): ");
@@ -117,7 +119,7 @@ int read_octal_address_and_fill(uint8_t packet[]) {
     return 0;
 }
 
-// Получение данных от пользователя
+// Сбор пакета данных на основе ввода пользователя
 void get_user_input(uint8_t packet[]) {
     int value;
     uint16_t vmax;
@@ -128,8 +130,7 @@ void get_user_input(uint8_t packet[]) {
     }
 
     printf("Значение: ");
-    while (scanf("%d", &value) != 1 || value < -32768 || value > 32767) {
-        printf("Введите число от -32768 до 32767: ");
+    while (scanf("%d", &value) != 1) {
         int c; while ((c = getchar()) != '\n' && c != EOF);
     }
 
@@ -145,6 +146,34 @@ void get_user_input(uint8_t packet[]) {
     packet[9] = digits;
 }
 
+// Проверка доступности сервера
+int check_server_alive(void) {
+    int sock;
+    struct sockaddr_in serv_addr;
+
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("socket");
+        return -1;
+    }
+
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(PORT);
+
+    if (inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0) {
+        perror("inet_pton");
+        close(sock);
+        return -1;
+    }
+
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        close(sock);
+        return 0; // сервер не доступен
+    }
+
+    close(sock);
+    return 1; // сервер доступен
+}
+
 int main(void) {
     int sock;
     struct sockaddr_in serv_addr;
@@ -153,9 +182,15 @@ int main(void) {
 
     printf("TCP Клиент %s:%d\n", SERVER_IP, PORT);
 
+    // Проверяем сервер перед запуском
+    if (!check_server_alive()) {
+        printf("Сервер недоступен. Запустите server.c и повторите.\n");
+        return -1;
+    }
+
     do {
         memset(packet, 0, PACKET_SIZE);
-        int ch; while ((ch = getchar()) != '\n' && ch != EOF);
+        int ch; while ((ch = getchar()) != '\n' && ch != EOF); // очистка буфера ввода
 
         get_user_input(packet);
 
