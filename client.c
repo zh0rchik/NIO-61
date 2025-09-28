@@ -1,8 +1,4 @@
-/*
- client.c
- TCP Клиент с красивым выводом ответа:
- HEX, BIN, ADDR, SIGN, VALUE, V_MAX, DIGIT
-*/
+/* client.c */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,108 +6,95 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
+#include <math.h>
 #include "crc16.h"
 
 #define PORT 8080
 #define SERVER_IP "127.0.0.1"
 #define PACKET_SIZE 12
+#define EPS 1e-9
 
-// Печать 32-битного слова в бинарном виде с пробелами каждые 4 бита
 static void print_binary32(uint32_t v) {
-    for (int i = 31; i >= 0; i--) {
+    for (int i = 31; i >= 0; --i) {
         printf("%d", (v >> i) & 1u);
         if (i % 4 == 0 && i != 0) printf(" ");
     }
     printf("\n");
 }
 
-// Расчёт весов разрядов (каждый следующий — в 2 раза меньше)
-static void calculate_weights(uint16_t vmax, uint8_t digits, uint32_t weights[]) {
-    uint32_t w = vmax;
-    for (uint8_t i = 0; i < digits; i++) {
+/* Формирует массив весов как double: Vmax, Vmax/2, Vmax/4, ... */
+static void calculate_weights_double(uint16_t vmax, uint8_t digits, double weights[]) {
+    double w = (double)vmax;
+    for (uint8_t i = 0; i < digits; ++i) {
         weights[i] = w;
-        w /= 2;
+        w /= 2.0;
     }
 }
 
-// Разбор ответа сервера и вывод в удобном виде
+/* Декодирование 32-битного ответа */
 void decode_response(uint32_t resp, uint16_t vmax, uint8_t digits) {
-    int C = (resp >> 31) & 1;       // бит подтверждения (валидность ответа)
-    int S = (resp >> 28) & 1;       // бит знака
-    uint16_t addr = resp & 0x1FFFu; // 13 младших бит → адрес
+    int C = (resp >> 31) & 1;
 
     if (!C) {
         printf("Ошибка сервера: invalid request\n");
         return;
     }
 
-    // Выборка «маски» включённых разрядов (digits бит подряд начиная с 27-го)
-    uint32_t pattern = 0;
-    for (uint8_t i = 0; i < digits; i++)
-        if ((resp >> (27 - i)) & 1u)
-            pattern |= (1u << (digits - 1 - i));
-
-    // вычисляем веса разрядов
-    uint32_t weights[16];
-    calculate_weights(vmax, digits, weights);
-
-    int32_t value = 0;
-    if (!S) { // положительное число
-        for (uint8_t i = 0; i < digits; i++)
-            if ((pattern >> (digits - 1 - i)) & 1u)
-                value += weights[i];
-    } else { // отрицательное: сумма минус 2^digits
-        int32_t sum = 0;
-        for (uint8_t i = 0; i < digits; i++)
-            if ((pattern >> (digits - 1 - i)) & 1u)
-                sum += weights[i];
-        value = sum - (1 << digits);
+    if (digits == 0 || digits > 27) {
+        printf("Неверное значение digits в ответе: %u\n", digits);
+        return;
     }
 
-    // Красивый вывод результата
+    uint16_t addr = resp & 0x1FFFu;
+
+    /* Собираем pattern (в виде целого числа X) */
+    uint32_t pattern = 0;
+    for (uint8_t i = 0; i < digits; ++i) {
+        if ((resp >> (27 - i)) & 1u) {
+            pattern |= (1u << (digits - 1 - i));
+        }
+    }
+
+    /* Получаем signed integer S_int из pattern */
+    uint32_t half = (1u << (digits - 1));
+    uint32_t full = (1u << digits);
+    int32_t s_int;
+    if (pattern & half) {
+        s_int = (int32_t)pattern - (int32_t)full;
+    } else {
+        s_int = (int32_t)pattern;
+    }
+
+    double scale = (double)vmax / (double)half;
+    double value_real = (double)s_int * scale;
+    long value_rounded = llround(value_real);
+
+    /* Печать ответа */
     printf("\nОтвет от сервера:\n");
     printf("\tBIN: "); print_binary32(resp);
     printf("\t--------------------------------------------\n");
     printf("\tHEX: 0x%08X\n", resp);
-    printf("\tADDR: %03o\n", addr); // восьмеричный формат
-    printf("\tSIGN: %c\n", S ? '-' : '+');
-    printf("\tVALUE: %d\n", value);
+    printf("\tADDR: %03o\n", addr);
+    printf("\tSIGN: %c\n", (s_int < 0) ? '-' : '+');
+    printf("\tVALUE: %ld\n", value_rounded);
     printf("\tV_MAX: %u\n", vmax);
     printf("\tDIGIT: %u\n", digits);
 }
 
-// Вычисление параметров vmax и digits по введённому числу
-void calculate_parameters(int value, uint16_t *vmax, uint8_t *digits) {
-    int abs_val = abs(value);
-    if (abs_val == 0) {
-        *vmax = 1;
-        *digits = 1;
-        return;
-    }
-
-    int power = 0, tmp = abs_val;
-    while (tmp > 0) { tmp >>= 1; power++; }
-    if (value < 0) power++; // для отрицательных — добавляем 1 бит на знак
-
-    *digits = (uint8_t)power;
-    *vmax = 1u << (power - 1); // максимальное значение старшего разряда
-}
-
-// Ввод восьмеричного адреса с выравниванием до 3 цифр
+/* Ввод восьмеричного адреса (3 цифры max), заполняем packet[2..4] */
 int read_octal_address_and_fill(uint8_t packet[]) {
     char buf[16];
-    printf("Адрес (восьмеричный): ");
+    printf("Адрес (восьмеричный, 000..377): ");
     if (scanf("%15s", buf) != 1) return -1;
 
     size_t len = strlen(buf);
     if (len == 0 || len > 3) { printf("Неверный формат\n"); return -1; }
 
-    for (size_t i = 0; i < len; i++)
+    for (size_t i = 0; i < len; ++i)
         if (buf[i] < '0' || buf[i] > '7') { printf("Только цифры 0-7\n"); return -1; }
 
     char padded[4] = {'0','0','0','\0'};
-    for (size_t i = 0; i < len; i++)
-        padded[3 - len + i] = buf[i];
+    for (size_t i = 0; i < len; ++i) padded[3 - len + i] = buf[i];
 
     packet[2] = padded[0] - '0';
     packet[3] = padded[1] - '0';
@@ -119,7 +102,6 @@ int read_octal_address_and_fill(uint8_t packet[]) {
     return 0;
 }
 
-// Сбор пакета данных на основе ввода пользователя
 void get_user_input(uint8_t packet[]) {
     int value;
     uint16_t vmax;
@@ -129,12 +111,14 @@ void get_user_input(uint8_t packet[]) {
         int c; while ((c = getchar()) != '\n' && c != EOF);
     }
 
-    printf("Значение: ");
-    while (scanf("%d", &value) != 1) {
-        int c; while ((c = getchar()) != '\n' && c != EOF);
-    }
+    printf("Значение (целое, -32768..32767): ");
+    while (scanf("%d", &value) != 1) { int c; while ((c = getchar()) != '\n' && c != EOF); }
 
-    calculate_parameters(value, &vmax, &digits);
+    printf("Цена старшего разряда (Vmax, >0): ");
+    while (scanf("%hu", &vmax) != 1 || vmax == 0) { int c; while ((c = getchar()) != '\n' && c != EOF); }
+
+    printf("Количество значащих разрядов (digits, 1..27): ");
+    while (scanf("%hhu", &digits) != 1 || digits == 0 || digits > 27) { int c; while ((c = getchar()) != '\n' && c != EOF); }
 
     uint16_t pid = (uint16_t)getpid();
     packet[0] = (pid >> 8) & 0xFF;
@@ -146,32 +130,19 @@ void get_user_input(uint8_t packet[]) {
     packet[9] = digits;
 }
 
-// Проверка доступности сервера
+/* Проверка доступности сервера */
 int check_server_alive(void) {
     int sock;
     struct sockaddr_in serv_addr;
 
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("socket");
-        return -1;
-    }
-
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) return -1;
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(PORT);
-
-    if (inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0) {
-        perror("inet_pton");
-        close(sock);
-        return -1;
-    }
-
-    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        close(sock);
-        return 0; // сервер не доступен
-    }
+    if (inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0) { close(sock); return -1; }
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) { close(sock); return 0; }
 
     close(sock);
-    return 1; // сервер доступен
+    return 1;
 }
 
 int main(void) {
@@ -182,7 +153,6 @@ int main(void) {
 
     printf("TCP Клиент %s:%d\n", SERVER_IP, PORT);
 
-    // Проверяем сервер перед запуском
     if (!check_server_alive()) {
         printf("Сервер недоступен. Запустите server.c и повторите.\n");
         return -1;
@@ -190,7 +160,7 @@ int main(void) {
 
     do {
         memset(packet, 0, PACKET_SIZE);
-        int ch; while ((ch = getchar()) != '\n' && ch != EOF); // очистка буфера ввода
+        int ch; while ((ch = getchar()) != '\n' && ch != EOF);
 
         get_user_input(packet);
 
@@ -199,12 +169,9 @@ int main(void) {
         packet[11] = crc & 0xFF;
 
         if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) { perror("socket"); return -1; }
-
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_port = htons(PORT);
-        if (inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0) {
-            perror("inet_pton"); close(sock); return -1;
-        }
+        inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr);
 
         if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
             perror("connect"); close(sock); continue;
@@ -217,7 +184,9 @@ int main(void) {
         if (n >= 4) {
             uint32_t resp = (resp_buf[0] << 24) | (resp_buf[1] << 16) |
                             (resp_buf[2] << 8) | resp_buf[3];
-            decode_response(resp, (packet[7]<<8)|packet[8], packet[9]);
+            uint16_t vmax = (packet[7] << 8) | packet[8];
+            uint8_t digits = packet[9];
+            decode_response(resp, vmax, digits);
         } else if (n > 0) {
             resp_buf[n] = '\0';
             printf("%s\n", resp_buf);
